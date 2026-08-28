@@ -29,11 +29,22 @@ class Schedule(Enum):
                 return schedule
         return cls.NIGHT
 
+    def emoji_for(self, has_online_photo: bool) -> str:
+        if has_online_photo:
+            return self.emoji
+
+        return {
+            Schedule.DAY: "🌞",
+            Schedule.ALL: "🌎",
+            Schedule.NIGHT: "🌛",
+        }[self]
+
 
 @dataclass
 class Fairy:
     name: str
     schedule: Schedule
+    has_online_photo: bool
 
 
 @dataclass
@@ -121,6 +132,12 @@ class IChefAPI:
         name
         menuItemSnapshot {
           name
+          modifierGroupSnapshot {
+            name
+            modifierOptionSnapshot {
+              name
+            }
+          }
         }
       }
     }
@@ -160,7 +177,14 @@ class ScheduleBot:
 
                 schedule = Schedule.from_name(name)
                 for item in category.get("menuItemSnapshot", []):
-                    fairies.append(Fairy(item["name"], schedule))
+                    has_online_photo = any(
+                        "線上拍" in group.get("name", "")
+                        and group.get("modifierOptionSnapshot")
+                        for group in item.get("modifierGroupSnapshot", [])
+                    )
+                    fairies.append(
+                        Fairy(item["name"], schedule, has_online_photo)
+                    )
 
             fairies.sort(key=lambda f: f.schedule.order)
         except (KeyError, TypeError) as e:
@@ -172,7 +196,10 @@ class ScheduleBot:
         message = f"{date} 出勤的小精靈有：\n\n"
 
         for fairy in fairies:
-            message += f"{fairy.name} {fairy.schedule.emoji}\n"
+            message += (
+                f"{fairy.name} "
+                f"{fairy.schedule.emoji_for(fairy.has_online_photo)}\n"
+            )
 
         message += self.OPENING_HOURS
         message += "實際班表以現場為準\n\n線上點拍連結：\nhttps://order.lefiya.com"
