@@ -152,7 +152,7 @@ class IChefAPI:
 class ScheduleBot:
     OPENING_HOURS = "\n今日營運時間：\n☀️：14:00 ~ 18:00\n🌍：14:00 ~ 22:00\n🌙：18:00 ~ 22:00\n"
     PHONE_PHOTO = "手機拍"
-    DELUXE_PHOTO = "豪華拍"
+    DELUXE_PHOTO = "豪華拍立得"
 
     def __init__(self, config: BotConfig):
         self.bot = TelegramBot(config)
@@ -173,14 +173,12 @@ class ScheduleBot:
         has_deluxe_photo = False
 
         for group in item.get("modifierGroupSnapshot", []):
-            if not group.get("modifierOptionSnapshot"):
-                continue
-
-            name = group.get("name", "")
-            if cls.PHONE_PHOTO in name:
-                has_phone_photo = True
-            if cls.DELUXE_PHOTO in name:
-                has_deluxe_photo = True
+            for option in group.get("modifierOptionSnapshot", []):
+                name = option.get("name", "")
+                if cls.PHONE_PHOTO in name:
+                    has_phone_photo = True
+                if cls.DELUXE_PHOTO in name:
+                    has_deluxe_photo = True
             if has_phone_photo and has_deluxe_photo:
                 break
 
@@ -227,7 +225,7 @@ class ScheduleBot:
         message += self.OPENING_HOURS
         message += (
             "實際班表以現場為準\n\n"
-            "線上點拍連結：\nhttps://order.lefiya.com\n"
+            "線上點拍連結：\nhttps://order.lefiya.com\n\n"
             "✨ 代表可點豪華拍"
         )
         return message
