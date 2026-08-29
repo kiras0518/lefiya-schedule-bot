@@ -179,10 +179,7 @@ class ScheduleBot:
                 schedule = Schedule.from_name(name)
                 for item in category.get("menuItemSnapshot", []):
                     has_online_photo = any(
-                        (
-                            "線上拍" in group.get("name", "")
-                            or "線上手機拍" in group.get("name", "")
-                        )
+                        "手機拍" in group.get("name", "")
                         and group.get("modifierOptionSnapshot")
                         for group in item.get("modifierGroupSnapshot", [])
                     )
