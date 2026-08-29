@@ -29,8 +29,8 @@ class Schedule(Enum):
                 return schedule
         return cls.NIGHT
 
-    def emoji_for(self, has_online_photo: bool) -> str:
-        if has_online_photo:
+    def emoji_for(self, has_phone_photo: bool) -> str:
+        if has_phone_photo:
             return self.emoji
 
         return {
@@ -44,7 +44,7 @@ class Schedule(Enum):
 class Fairy:
     name: str
     schedule: Schedule
-    has_online_photo: bool
+    has_phone_photo: bool
     has_deluxe_photo: bool
 
 
@@ -151,6 +151,8 @@ class IChefAPI:
 
 class ScheduleBot:
     OPENING_HOURS = "\n今日營運時間：\n☀️：14:00 ~ 18:00\n🌍：14:00 ~ 22:00\n🌙：18:00 ~ 22:00\n"
+    PHONE_PHOTO = "手機拍"
+    DELUXE_PHOTO = "豪華拍"
 
     def __init__(self, config: BotConfig):
         self.bot = TelegramBot(config)
@@ -165,6 +167,25 @@ class ScheduleBot:
         items_data = self.api.fetch_menu_items(uuids)
         return self._parse_fairies(items_data)
 
+    @classmethod
+    def _get_photo_flags(cls, item: Dict[str, Any]) -> tuple[bool, bool]:
+        has_phone_photo = False
+        has_deluxe_photo = False
+
+        for group in item.get("modifierGroupSnapshot", []):
+            if not group.get("modifierOptionSnapshot"):
+                continue
+
+            name = group.get("name", "")
+            if cls.PHONE_PHOTO in name:
+                has_phone_photo = True
+            if cls.DELUXE_PHOTO in name:
+                has_deluxe_photo = True
+            if has_phone_photo and has_deluxe_photo:
+                break
+
+        return has_phone_photo, has_deluxe_photo
+
     def _parse_fairies(self, data: Dict[str, Any]) -> tuple[List[Fairy], str]:
         fairies = []
         date = ""
@@ -178,21 +199,12 @@ class ScheduleBot:
 
                 schedule = Schedule.from_name(name)
                 for item in category.get("menuItemSnapshot", []):
-                    has_online_photo = any(
-                        "手機拍" in group.get("name", "")
-                        and group.get("modifierOptionSnapshot")
-                        for group in item.get("modifierGroupSnapshot", [])
-                    )
-                    has_deluxe_photo = any(
-                        "豪華拍" in group.get("name", "")
-                        and group.get("modifierOptionSnapshot")
-                        for group in item.get("modifierGroupSnapshot", [])
-                    )
+                    has_phone_photo, has_deluxe_photo = self._get_photo_flags(item)
                     fairies.append(
                         Fairy(
                             item["name"],
                             schedule,
-                            has_online_photo,
+                            has_phone_photo,
                             has_deluxe_photo,
                         )
                     )
@@ -205,13 +217,12 @@ class ScheduleBot:
 
     def format_message(self, fairies: List[Fairy], date: str) -> str:
         message = f"{date} 出勤的小精靈有：\n\n"
-
-        for fairy in fairies:
-            message += (
-                f"{fairy.name} "
-                f"{fairy.schedule.emoji_for(fairy.has_online_photo)}"
-                f"{'✨' if fairy.has_deluxe_photo else ''}\n"
-            )
+        message += "\n".join(
+            f"{fairy.name} "
+            f"{fairy.schedule.emoji_for(fairy.has_phone_photo)}"
+            f"{'✨' if fairy.has_deluxe_photo else ''}"
+            for fairy in fairies
+        )
 
         message += self.OPENING_HOURS
         message += "實際班表以現場為準\n\n線上點拍連結：\nhttps://order.lefiya.com"
