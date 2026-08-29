@@ -150,7 +150,7 @@ class IChefAPI:
 
 
 class ScheduleBot:
-    OPENING_HOURS = "\n今日營運時間：\n☀️：14:00 ~ 18:00\n🌍：14:00 ~ 22:00\n🌙：18:00 ~ 22:00\n"
+    OPENING_HOURS = "\n\n今日營運時間：\n☀️：14:00 ~ 18:00\n🌍：14:00 ~ 22:00\n🌙：18:00 ~ 22:00\n"
     PHONE_PHOTO = "手機拍"
     DELUXE_PHOTO = "豪華拍立得"
 
