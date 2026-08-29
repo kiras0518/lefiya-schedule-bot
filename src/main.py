@@ -225,7 +225,11 @@ class ScheduleBot:
         )
 
         message += self.OPENING_HOURS
-        message += "實際班表以現場為準\n\n線上點拍連結：\nhttps://order.lefiya.com"
+        message += (
+            "實際班表以現場為準\n\n"
+            "線上點拍連結：\nhttps://order.lefiya.com\n"
+            "✨ 代表可點豪華拍"
+        )
         return message
 
     def should_send(self) -> bool:
