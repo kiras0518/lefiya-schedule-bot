@@ -45,6 +45,7 @@ class Fairy:
     name: str
     schedule: Schedule
     has_online_photo: bool
+    has_deluxe_photo: bool
 
 
 @dataclass
@@ -182,8 +183,18 @@ class ScheduleBot:
                         and group.get("modifierOptionSnapshot")
                         for group in item.get("modifierGroupSnapshot", [])
                     )
+                    has_deluxe_photo = any(
+                        "豪華拍" in group.get("name", "")
+                        and group.get("modifierOptionSnapshot")
+                        for group in item.get("modifierGroupSnapshot", [])
+                    )
                     fairies.append(
-                        Fairy(item["name"], schedule, has_online_photo)
+                        Fairy(
+                            item["name"],
+                            schedule,
+                            has_online_photo,
+                            has_deluxe_photo,
+                        )
                     )
 
             fairies.sort(key=lambda f: f.schedule.order)
@@ -198,7 +209,8 @@ class ScheduleBot:
         for fairy in fairies:
             message += (
                 f"{fairy.name} "
-                f"{fairy.schedule.emoji_for(fairy.has_online_photo)}\n"
+                f"{fairy.schedule.emoji_for(fairy.has_online_photo)}"
+                f"{'✨' if fairy.has_deluxe_photo else ''}\n"
             )
 
         message += self.OPENING_HOURS
