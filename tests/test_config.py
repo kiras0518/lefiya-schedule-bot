@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from lefiya_schedule_bot.config import ConfigurationError, Settings
+from lefiya_schedule_bot.config import ConfigurationError, Settings, WebhookSettings
 
 
 def test_settings_read_required_and_default_values(
@@ -46,3 +46,25 @@ def test_settings_reject_invalid_optional_values(
 
     with pytest.raises(ConfigurationError, match=message):
         Settings.from_env()
+
+
+def test_webhook_settings_read_required_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", " channel-secret ")
+    monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("LOG_LEVEL", "warning")
+
+    settings = WebhookSettings.from_env()
+
+    assert settings.line_channel_secret == "channel-secret"
+    assert settings.log_level == "WARNING"
+
+
+def test_webhook_settings_require_channel_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+
+    with pytest.raises(ConfigurationError, match="LINE_CHANNEL_SECRET"):
+        WebhookSettings.from_env()

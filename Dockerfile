@@ -15,4 +15,6 @@ COPY --chown=app:app src ./src
 
 USER app
 
+EXPOSE 8080
+
 CMD ["python", "-m", "lefiya_schedule_bot"]

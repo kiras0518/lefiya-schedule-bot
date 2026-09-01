@@ -49,3 +49,21 @@ class Settings:
     @property
     def timezone(self) -> ZoneInfo:
         return ZoneInfo(self.timezone_name)
+
+
+@dataclass(frozen=True)
+class WebhookSettings:
+    line_channel_secret: str
+    log_level: str = "INFO"
+
+    @classmethod
+    def from_env(cls) -> WebhookSettings:
+        channel_secret = os.environ.get("LINE_CHANNEL_SECRET", "").strip()
+        if not channel_secret:
+            raise ConfigurationError("LINE_CHANNEL_SECRET is required")
+
+        log_level = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+        if log_level not in logging.getLevelNamesMapping():
+            raise ConfigurationError(f"LOG_LEVEL is invalid: {log_level}")
+
+        return cls(line_channel_secret=channel_secret, log_level=log_level)
