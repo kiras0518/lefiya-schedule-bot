@@ -1,2 +1,2 @@
 requests==2.32.3
-ruff==0.12.8
+tzdata==2025.2
