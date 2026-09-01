@@ -1,11 +1,11 @@
 # Lefiya Schedule Bot
 
 每天從 iCHEF 讀取蕾菲亞小精靈的今日班表，並透過 LINE Official Account
-Messaging API 廣播給所有好友。容器採單次執行模式：由部署主機每天 13:40
+Messaging API 廣播給所有好友。廣播程序採單次執行模式：由部署主機每天 13:40
 （Asia/Taipei）啟動，每五分鐘檢查一次，取得今日班表後送出並結束；15:00
 仍無資料則以非零狀態結束。
 
-同一映像也提供獨立的長駐 webhook receiver，接收 LINE 好友訊息、加好友
+Docker 映像預設啟動長駐 webhook receiver，接收 LINE 好友訊息、加好友
 （`follow`）及其他 webhook 事件。receiver 會在解析 JSON 前，以
 `LINE_CHANNEL_SECRET` 驗證原始 request body 的 `x-line-signature`。
 
@@ -35,13 +35,14 @@ PYTHONPATH=src python -m lefiya_schedule_bot
 
 ```bash
 export LINE_CHANNEL_SECRET="test-channel-secret"
-PYTHONPATH=src gunicorn --bind 127.0.0.1:8080 \
+PYTHONPATH=src gunicorn --bind "127.0.0.1:${PORT:-8080}" \
   'lefiya_schedule_bot.webhook:create_app()'
 ```
 
-webhook endpoint 是 `POST /webhooks/line`，健康檢查是 `GET /health`。預設事件
-handler 會安全地記錄事件種類、訊息種類與 webhook event ID，不會記錄訊息內容
-或 LINE user ID。自動回覆或資料保存應透過自訂 event handler 另行實作。
+webhook endpoint 是 `POST /callback`；`POST /webhooks/line` 是相同 handler 的
+別名。健康檢查是 `GET /health`。預設事件 handler 會安全地記錄事件種類、訊息
+種類與 webhook event ID，不會記錄訊息內容或 LINE user ID。自動回覆或資料
+保存應透過自訂 event handler 另行實作。
 
 環境變數：
 
@@ -93,14 +94,15 @@ chmod 600 /etc/lefiya-schedule-webhook.env
 docker run --rm \
   --name lefiya-schedule-bot \
   --env-file /etc/lefiya-schedule-broadcast.env \
-  lefiya-schedule-bot:latest
+  lefiya-schedule-bot:latest \
+  python -m lefiya_schedule_bot
 ```
 
 正式環境由主機 cron 每天 13:40 啟動。以下範例假設主機時區已設為
 `Asia/Taipei`：
 
 ```cron
-40 13 * * * /usr/bin/docker run --rm --name lefiya-schedule-bot --env-file /etc/lefiya-schedule-broadcast.env lefiya-schedule-bot:latest >> /var/log/lefiya-schedule-bot.log 2>&1
+40 13 * * * /usr/bin/docker run --rm --name lefiya-schedule-bot --env-file /etc/lefiya-schedule-broadcast.env lefiya-schedule-bot:latest python -m lefiya_schedule_bot >> /var/log/lefiya-schedule-bot.log 2>&1
 ```
 
 若主機使用其他時區，請依主機 cron 的時區設定換算執行時間。不要替此容器設定
@@ -115,15 +117,28 @@ docker run --detach \
   --restart unless-stopped \
   --env-file /etc/lefiya-schedule-webhook.env \
   --publish 127.0.0.1:8080:8080 \
-  lefiya-schedule-bot:latest \
-  gunicorn --workers 2 --bind 0.0.0.0:8080 \
-  'lefiya_schedule_bot.webhook:create_app()'
+  lefiya-schedule-bot:latest
 ```
 
 在 webhook container 前配置具有有效公開 TLS 憑證的 reverse proxy，將
-`https://你的網域/webhooks/line` 轉送到 `127.0.0.1:8080`。接著在 LINE
+`https://你的網域/callback` 轉送到 `127.0.0.1:8080`。接著在 LINE
 Developers Console 將該 HTTPS URL 設為 Webhook URL、按 Verify，並啟用
 webhook。不要直接把 8080 port 公開到網際網路。
+
+### Zeabur
+
+從 Git repository 部署時，Zeabur 會使用根目錄的 Dockerfile。請在服務的
+Variables 設定 `LINE_CHANNEL_SECRET`；Docker 預設命令會啟動 Gunicorn，並監聽
+Zeabur 注入的 `PORT`（未提供時使用 8080）。部署後設定：
+
+```text
+Webhook URL: https://lefiya-schedule-bot.zeabur.app/callback
+Health URL:  https://lefiya-schedule-bot.zeabur.app/health
+```
+
+`GET /health` 應回 `204`，LINE Developers Console 的 Verify 應回成功。每日
+broadcaster 應使用另一個排程服務，執行 `python -m lefiya_schedule_bot`；不要在
+webhook service 內取代預設啟動命令。
 
 LINE 可能重新投遞 webhook。預設 handler 只有記錄事件；未來若加入回覆、寫入
 資料庫等副作用，應以 `webhookEventId` 實作持久化去重。

@@ -35,7 +35,8 @@ def test_verify_line_signature_matches_official_example() -> None:
     )
 
 
-def test_webhook_dispatches_message_and_follow_events() -> None:
+@pytest.mark.parametrize("path", ["/callback", "/webhooks/line"])
+def test_webhook_dispatches_message_and_follow_events(path: str) -> None:
     received: list[dict[str, Any]] = []
     app = create_app(
         WebhookSettings(CHANNEL_SECRET),
@@ -63,7 +64,7 @@ def test_webhook_dispatches_message_and_follow_events() -> None:
     ).encode()
 
     response = app.test_client().post(
-        "/webhooks/line",
+        path,
         data=body,
         headers={"x-line-signature": sign(body)},
         content_type="application/json",
@@ -79,7 +80,7 @@ def test_webhook_accepts_line_console_verification_request() -> None:
     body = b'{"destination":"Ubot","events":[]}'
 
     response = app.test_client().post(
-        "/webhooks/line",
+        "/callback",
         data=body,
         headers={"x-line-signature": sign(body)},
         content_type="application/json",

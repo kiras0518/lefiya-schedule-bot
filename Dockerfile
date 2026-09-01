@@ -17,4 +17,4 @@ USER app
 
 EXPOSE 8080
 
-CMD ["python", "-m", "lefiya_schedule_bot"]
+CMD ["sh", "-c", "exec gunicorn --workers 2 --bind \"0.0.0.0:${PORT:-8080}\" 'lefiya_schedule_bot.webhook:create_app()'"]

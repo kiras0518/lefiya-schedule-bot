@@ -113,6 +113,7 @@ def create_app(
     def health() -> Response:
         return Response(status=204)
 
+    @app.post("/callback")
     @app.post("/webhooks/line")
     def line_webhook() -> Response:
         body = request.get_data(cache=False, as_text=False)
