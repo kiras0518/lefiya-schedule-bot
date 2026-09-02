@@ -10,13 +10,17 @@ from zoneinfo import ZoneInfo
 
 from .formatter import format_schedule_message
 from .ichef import IChefAPIError, IChefClient
-from .line import LineBroadcaster
+from .line import BroadcastResult, LineBroadcaster
 from .logging_config import log_event
-from .models import MenuDataError
+from .models import DailySchedule, MenuDataError
 
 
 class DeadlineExceededError(RuntimeError):
     """Raised when today's schedule is still unavailable at the deadline."""
+
+
+class ScheduleUnavailableError(RuntimeError):
+    """Raised when a requested service date has no non-empty schedule."""
 
 
 class ScheduleJob:
@@ -107,17 +111,10 @@ class ScheduleJob:
 
             schedule = schedules.get(run_date)
             if schedule is not None and schedule.fairies:
-                message = format_schedule_message(schedule)
-                retry_key = daily_retry_key(run_date)
-                result = self.broadcaster.broadcast(message, retry_key)
-                event = "already_sent" if result.already_sent else "broadcast_sent"
-                log_event(
-                    self.logger,
-                    logging.INFO,
-                    event,
-                    schedule_date=run_date.strftime("%Y%m%d"),
-                    line_request_id=result.request_id,
-                    fairy_count=len(schedule.fairies),
+                self._broadcast_schedule(
+                    schedule,
+                    daily_retry_key(run_date),
+                    mode="automatic",
                 )
                 return
 
@@ -153,6 +150,72 @@ class ScheduleJob:
             )
             self.sleeper(seconds)
 
+    def run_manual(
+        self,
+        target_date: date,
+        retry_key: str | None = None,
+    ) -> BroadcastResult:
+        """Fetch and broadcast one requested date without schedule time limits."""
+        effective_retry_key = (
+            retry_key if retry_key is not None else manual_retry_key()
+        )
+        schedule_date = target_date.strftime("%Y%m%d")
+        log_event(
+            self.logger,
+            logging.INFO,
+            "manual_started",
+            mode="manual",
+            schedule_date=schedule_date,
+            retry_key=effective_retry_key,
+        )
+
+        try:
+            schedules = self.ichef.fetch_schedules()
+            schedule = schedules.get(target_date)
+            if schedule is None or not schedule.fairies:
+                raise ScheduleUnavailableError(
+                    f"schedule unavailable for {target_date:%Y-%m-%d}"
+                )
+            return self._broadcast_schedule(
+                schedule,
+                effective_retry_key,
+                mode="manual",
+            )
+        except Exception as error:
+            log_event(
+                self.logger,
+                logging.ERROR,
+                "manual_failed",
+                mode="manual",
+                schedule_date=schedule_date,
+                retry_key=effective_retry_key,
+                error=str(error),
+                error_type=type(error).__name__,
+            )
+            raise
+
+    def _broadcast_schedule(
+        self,
+        schedule: DailySchedule,
+        retry_key: str,
+        *,
+        mode: str,
+    ) -> BroadcastResult:
+        message = format_schedule_message(schedule)
+        result = self.broadcaster.broadcast(message, retry_key)
+        event = "already_sent" if result.already_sent else "broadcast_sent"
+        log_event(
+            self.logger,
+            logging.INFO,
+            event,
+            mode=mode,
+            schedule_date=schedule.service_date.strftime("%Y%m%d"),
+            retry_key=retry_key,
+            line_request_id=result.request_id,
+            fairy_count=len(schedule.fairies),
+        )
+        return result
+
     def _now(self) -> datetime:
         current = self.clock()
         if current.tzinfo is None:
@@ -167,6 +230,10 @@ def daily_retry_key(service_date: date) -> str:
             f"https://order.lefiya.com/schedule/{service_date:%Y%m%d}",
         )
     )
+
+
+def manual_retry_key() -> str:
+    return str(uuid.uuid4())
 
 
 def _seconds_until(now: datetime, target: time_of_day) -> float:

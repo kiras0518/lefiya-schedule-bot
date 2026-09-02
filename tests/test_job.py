@@ -9,6 +9,7 @@ import pytest
 from lefiya_schedule_bot.job import (
     DeadlineExceededError,
     ScheduleJob,
+    ScheduleUnavailableError,
     daily_retry_key,
 )
 from lefiya_schedule_bot.line import BroadcastResult
@@ -156,6 +157,92 @@ def test_job_does_not_broadcast_after_deadline() -> None:
         job.run()
 
     assert ichef.calls == 0
+    assert broadcaster.calls == []
+
+
+def test_manual_job_broadcasts_after_deadline_with_explicit_retry_key() -> None:
+    today = date(2026, 9, 1)
+    clock = MutableClock(datetime(2026, 9, 1, 15, 1, tzinfo=TAIPEI))
+    ichef = FakeIChef([{today: make_schedule(today)}])
+    broadcaster = FakeBroadcaster()
+    job = ScheduleJob(
+        ichef,  # type: ignore[arg-type]
+        broadcaster,  # type: ignore[arg-type]
+        TAIPEI,
+        clock=clock,
+        sleeper=clock.sleep,
+    )
+
+    result = job.run_manual(today, "123e4567-e89b-12d3-a456-426614174000")
+
+    assert result.already_sent is False
+    assert ichef.calls == 1
+    assert len(broadcaster.calls) == 1
+    assert broadcaster.calls[0][1] == "123e4567-e89b-12d3-a456-426614174000"
+
+
+def test_manual_job_fetches_immediately_before_automatic_start_time() -> None:
+    today = date(2026, 9, 1)
+    clock = MutableClock(datetime(2026, 9, 1, 13, 0, tzinfo=TAIPEI))
+    ichef = FakeIChef([{today: make_schedule(today)}])
+    broadcaster = FakeBroadcaster()
+    job = ScheduleJob(
+        ichef,  # type: ignore[arg-type]
+        broadcaster,  # type: ignore[arg-type]
+        TAIPEI,
+        clock=clock,
+        sleeper=lambda _: pytest.fail("manual mode must not wait"),
+    )
+
+    job.run_manual(today)
+
+    assert ichef.calls == 1
+    assert len(broadcaster.calls) == 1
+
+
+def test_manual_job_generates_a_new_retry_key_for_each_run() -> None:
+    today = date(2026, 9, 1)
+    ichef = FakeIChef(
+        [{today: make_schedule(today)}, {today: make_schedule(today)}]
+    )
+    broadcaster = FakeBroadcaster()
+    job = ScheduleJob(
+        ichef,  # type: ignore[arg-type]
+        broadcaster,  # type: ignore[arg-type]
+        TAIPEI,
+    )
+
+    job.run_manual(today)
+    job.run_manual(today)
+
+    assert len(broadcaster.calls) == 2
+    assert broadcaster.calls[0][1] != broadcaster.calls[1][1]
+    assert all(len(key) == 36 for _, key in broadcaster.calls)
+
+
+@pytest.mark.parametrize(
+    "schedules",
+    [
+        {},
+        {date(2026, 9, 1): DailySchedule(date(2026, 9, 1), ())},
+    ],
+)
+def test_manual_job_does_not_broadcast_when_target_schedule_is_unavailable(
+    schedules: dict[date, DailySchedule],
+) -> None:
+    today = date(2026, 9, 1)
+    ichef = FakeIChef([schedules])
+    broadcaster = FakeBroadcaster()
+    job = ScheduleJob(
+        ichef,  # type: ignore[arg-type]
+        broadcaster,  # type: ignore[arg-type]
+        TAIPEI,
+    )
+
+    with pytest.raises(ScheduleUnavailableError, match="2026-09-01"):
+        job.run_manual(today)
+
+    assert ichef.calls == 1
     assert broadcaster.calls == []
 
 

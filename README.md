@@ -31,6 +31,27 @@ export LOG_LEVEL="INFO"
 PYTHONPATH=src python -m lefiya_schedule_bot
 ```
 
+手動補抓會立即執行一次，不受 13:40 開始時間與 15:00 截止時間限制：
+
+```bash
+PYTHONPATH=src python -m lefiya_schedule_bot --manual
+PYTHONPATH=src python -m lefiya_schedule_bot --manual --date 2026-09-02
+```
+
+`--date` 使用 `YYYY-MM-DD`，預設為 `APP_TIMEZONE` 的今天，只能指定今天或過去
+日期。手動模式若未指定 `--retry-key`，每次執行都會產生新的 key 並重新廣播。若
+LINE 回應逾時或 5xx 而結果不明，請從 structured log 取出該次的 retry key，於
+24 小時內使用相同 key 重試：
+
+```bash
+PYTHONPATH=src python -m lefiya_schedule_bot \
+  --manual --date 2026-09-02 \
+  --retry-key 123e4567-e89b-12d3-a456-426614174000
+```
+
+手動模式查不到目標日期或班表為空時會以非零狀態結束，且不會發送訊息。`--date`
+與 `--retry-key` 必須和 `--manual` 一起使用。
+
 本機啟動 webhook receiver：
 
 ```bash
@@ -88,24 +109,41 @@ chmod 600 /etc/lefiya-schedule-broadcast.env
 chmod 600 /etc/lefiya-schedule-webhook.env
 ```
 
-於台北時間 13:40–15:00 間手動執行：
+自動模式由主機 cron 每天 13:40 啟動。正式環境的自動與手動廣播都必須使用同一個
+主機層級鎖，避免兩個 Docker container 同時執行。以下範例使用 `flock`；請確認
+執行帳號可以建立或寫入 `/var/lock/lefiya-schedule-bot-broadcast.lock`。
+
+手動補抓可以在 15:00 後執行：
 
 ```bash
-docker run --rm \
-  --name lefiya-schedule-bot \
+flock -n /var/lock/lefiya-schedule-bot-broadcast.lock \
+docker run --rm --name lefiya-schedule-bot-manual \
   --env-file /etc/lefiya-schedule-broadcast.env \
   lefiya-schedule-bot:latest \
-  python -m lefiya_schedule_bot
+  python -m lefiya_schedule_bot --manual
 ```
 
-正式環境由主機 cron 每天 13:40 啟動。以下範例假設主機時區已設為
+指定日期或復原不確定的 LINE 請求：
+
+```bash
+flock -n /var/lock/lefiya-schedule-bot-broadcast.lock \
+docker run --rm --name lefiya-schedule-bot-manual \
+  --env-file /etc/lefiya-schedule-broadcast.env \
+  lefiya-schedule-bot:latest \
+  python -m lefiya_schedule_bot --manual \
+  --date 2026-09-02 \
+  --retry-key 123e4567-e89b-12d3-a456-426614174000
+```
+
+以下 cron 範例假設主機時區已設為
 `Asia/Taipei`：
 
 ```cron
-40 13 * * * /usr/bin/docker run --rm --name lefiya-schedule-bot --env-file /etc/lefiya-schedule-broadcast.env lefiya-schedule-bot:latest python -m lefiya_schedule_bot >> /var/log/lefiya-schedule-bot.log 2>&1
+40 13 * * * /usr/bin/flock -n /var/lock/lefiya-schedule-bot-broadcast.lock /usr/bin/docker run --rm --name lefiya-schedule-bot --env-file /etc/lefiya-schedule-broadcast.env lefiya-schedule-bot:latest python -m lefiya_schedule_bot >> /var/log/lefiya-schedule-bot.log 2>&1
 ```
 
-若主機使用其他時區，請依主機 cron 的時區設定換算執行時間。不要替此容器設定
+若主機使用其他時區，請依主機 cron 的時區設定換算執行時間。若 `flock` 取得失敗，
+該次工作會直接結束且不會發送。不要替此容器設定
 `--restart=always`：成功廣播或 15:00 逾時後，容器都應保持停止，等待隔日 cron
 重新啟動。
 
@@ -137,8 +175,9 @@ Health URL:  https://lefiya-schedule-bot.zeabur.app/health
 ```
 
 `GET /health` 應回 `204`，LINE Developers Console 的 Verify 應回成功。每日
-broadcaster 應使用另一個排程服務，執行 `python -m lefiya_schedule_bot`；不要在
-webhook service 內取代預設啟動命令。
+broadcaster 應使用另一個排程服務，執行 `python -m lefiya_schedule_bot`；需要
+補抓時執行 `python -m lefiya_schedule_bot --manual`。排程器必須設定同一時間只能有
+一個 broadcaster job 執行；不要在 webhook service 內取代預設啟動命令。
 
 LINE 可能重新投遞 webhook。預設 handler 只有記錄事件；未來若加入回覆、寫入
 資料庫等副作用，應以 `webhookEventId` 實作持久化去重。
@@ -148,8 +187,8 @@ LINE 可能重新投遞 webhook。預設 handler 只有記錄事件；未來若�
 | 退出碼 | 意義 |
 |---:|---|
 | `0` | 廣播成功，或相同 retry key 已由 LINE 接受 |
-| `1` | 15:00 無今日班表、上游資料錯誤或 LINE 發送失敗 |
-| `2` | 環境設定錯誤 |
+| `1` | 自動模式逾時、手動模式無目標班表、上游資料錯誤、互斥鎖忙碌或 LINE 發送失敗 |
+| `2` | 環境設定錯誤或 CLI 參數錯誤 |
 
 LINE 全好友廣播會依可接收好友人數計入每月訊息額度。啟用排程前，請先確認
 Official Account 方案足以負擔「好友數 × 當月發送天數」。
