@@ -12,9 +12,11 @@ RUN pip install --no-cache-dir --requirement requirements.txt \
     && useradd --system --gid app --home-dir /nonexistent app
 
 COPY --chown=app:app src ./src
+COPY --chown=app:app entrypoint.sh ./entrypoint.sh
+RUN chmod 755 ./entrypoint.sh
 
 USER app
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "exec gunicorn --workers 2 --bind \"0.0.0.0:${PORT:-8080}\" 'lefiya_schedule_bot.webhook:create_app()'"]
+CMD ["/app/entrypoint.sh"]

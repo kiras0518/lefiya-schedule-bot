@@ -1,11 +1,12 @@
 # Lefiya Schedule Bot
 
 每天從 iCHEF 讀取蕾菲亞小精靈的今日班表，並透過 LINE Official Account
-Messaging API 廣播給所有好友。廣播程序採單次執行模式：由部署主機每天 13:40
-（Asia/Taipei）啟動，每五分鐘檢查一次，取得今日班表後送出並結束；15:00
-仍無資料則以非零狀態結束。
+Messaging API 廣播給所有好友。預設容器由 `entrypoint.sh` 同時啟動長駐 webhook
+receiver 與內建 scheduler；scheduler 每天 05:35 UTC（13:35 Asia/Taipei）啟動
+一次廣播程序，每五分鐘檢查一次，取得今日班表後送出並結束；15:00 仍無資料則以
+非零狀態結束，隔日會自動重試。
 
-Docker 映像預設啟動長駐 webhook receiver，接收 LINE 好友訊息、加好友
+Webhook receiver 接收 LINE 好友訊息、加好友
 （`follow`）及其他 webhook 事件。receiver 會在解析 JSON 前，以
 `LINE_CHANNEL_SECRET` 驗證原始 request body 的 `x-line-signature`。
 
@@ -75,6 +76,10 @@ webhook endpoint 是 `POST /callback`；`POST /webhooks/line` 是相同 handler 
 | `APP_TIMEZONE` | 廣播 | 否 | `Asia/Taipei` | IANA timezone |
 | `LOG_LEVEL` | 兩者 | 否 | `INFO` | Python logging level |
 
+直接使用 Docker 預設命令時，scheduler 與 webhook 會同時啟動，因此必須同時提供
+`LINE_CHANNEL_ACCESS_TOKEN` 與 `LINE_CHANNEL_SECRET`。若只需要其中一個程序，請在
+`docker run` 後覆寫命令。
+
 ## 部署
 
 建立映像：
@@ -102,16 +107,41 @@ LINE_CHANNEL_SECRET=your-channel-secret
 LOG_LEVEL=INFO
 ```
 
+直接使用預設 entrypoint 時，請使用同時包含兩組設定的
+`/etc/lefiya-schedule-bot.env`：
+
+```dotenv
+LINE_CHANNEL_ACCESS_TOKEN=your-long-lived-channel-access-token
+LINE_CHANNEL_SECRET=your-channel-secret
+ICHEF_PUBLIC_ID=WqxdHUPa
+APP_TIMEZONE=Asia/Taipei
+LOG_LEVEL=INFO
+```
+
 限制環境檔只能由部署帳號讀取：
 
 ```bash
 chmod 600 /etc/lefiya-schedule-broadcast.env
 chmod 600 /etc/lefiya-schedule-webhook.env
+chmod 600 /etc/lefiya-schedule-bot.env
 ```
 
-自動模式由主機 cron 每天 13:40 啟動。正式環境的自動與手動廣播都必須使用同一個
-主機層級鎖，避免兩個 Docker container 同時執行。以下範例使用 `flock`；請確認
-執行帳號可以建立或寫入 `/var/lock/lefiya-schedule-bot-broadcast.lock`。
+預設容器命令會由內建 scheduler 每天 05:35 UTC（13:35 Asia/Taipei）啟動自動模式，
+因此不需要另外設定 cron：
+
+```bash
+docker run --detach \
+  --name lefiya-schedule-bot \
+  --restart unless-stopped \
+  --env-file /etc/lefiya-schedule-bot.env \
+  --publish 127.0.0.1:8080:8080 \
+  lefiya-schedule-bot:latest
+```
+
+若另有手動或 one-shot 廣播，仍必須使用主機層級鎖，避免和內建 scheduler 同時執行。
+以下手動範例使用 `flock`；請確認執行帳號可以建立或寫入
+`/var/lock/lefiya-schedule-bot-broadcast.lock`。若部署多個副本，請只保留一個副本
+執行內建 scheduler。
 
 手動補抓可以在 15:00 後執行：
 
@@ -135,8 +165,8 @@ docker run --rm --name lefiya-schedule-bot-manual \
   --retry-key 123e4567-e89b-12d3-a456-426614174000
 ```
 
-以下 cron 範例假設主機時區已設為
-`Asia/Taipei`：
+如果部署平台本身已有排程，也可以覆寫 Docker 預設命令，讓每次執行只跑一次
+廣播 job。以下 cron 範例假設主機時區已設為 `Asia/Taipei`：
 
 ```cron
 40 13 * * * /usr/bin/flock -n /var/lock/lefiya-schedule-bot-broadcast.lock /usr/bin/docker run --rm --name lefiya-schedule-bot --env-file /etc/lefiya-schedule-broadcast.env lefiya-schedule-bot:latest python -m lefiya_schedule_bot >> /var/log/lefiya-schedule-bot.log 2>&1
@@ -155,7 +185,9 @@ docker run --detach \
   --restart unless-stopped \
   --env-file /etc/lefiya-schedule-webhook.env \
   --publish 127.0.0.1:8080:8080 \
-  lefiya-schedule-bot:latest
+  lefiya-schedule-bot:latest \
+  gunicorn --workers 2 --bind 0.0.0.0:8080 \
+  'lefiya_schedule_bot.webhook:create_app()'
 ```
 
 在 webhook container 前配置具有有效公開 TLS 憑證的 reverse proxy，將
@@ -165,19 +197,19 @@ webhook。不要直接把 8080 port 公開到網際網路。
 
 ### Zeabur
 
-從 Git repository 部署時，Zeabur 會使用根目錄的 Dockerfile。請在服務的
-Variables 設定 `LINE_CHANNEL_SECRET`；Docker 預設命令會啟動 Gunicorn，並監聽
-Zeabur 注入的 `PORT`（未提供時使用 8080）。部署後設定：
+從 Git repository 部署時，Zeabur 會使用根目錄的 Dockerfile。Docker 預設命令會
+啟動內建 scheduler 與 Gunicorn webhook receiver，並監聽 Zeabur 注入的 `PORT`
+（未提供時使用 8080）。請在服務的 Variables 同時設定
+`LINE_CHANNEL_ACCESS_TOKEN` 與 `LINE_CHANNEL_SECRET`。部署後設定：
 
 ```text
 Webhook URL: https://lefiya-schedule-bot.zeabur.app/callback
 Health URL:  https://lefiya-schedule-bot.zeabur.app/health
 ```
 
-`GET /health` 應回 `204`，LINE Developers Console 的 Verify 應回成功。每日
-broadcaster 應使用另一個排程服務，執行 `python -m lefiya_schedule_bot`；需要
-補抓時執行 `python -m lefiya_schedule_bot --manual`。排程器必須設定同一時間只能有
-一個 broadcaster job 執行；不要在 webhook service 內取代預設啟動命令。
+`GET /health` 應回 `204`，LINE Developers Console 的 Verify 應回成功。需要補抓時，
+執行 `python -m lefiya_schedule_bot --manual`；若以平台的 one-shot job 執行，請
+覆寫 Docker 命令並自行確保同一時間只有一個 broadcaster job。
 
 LINE 可能重新投遞 webhook。預設 handler 只有記錄事件；未來若加入回覆、寫入
 資料庫等副作用，應以 `webhookEventId` 實作持久化去重。
