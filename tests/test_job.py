@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -179,6 +180,42 @@ def test_manual_job_broadcasts_after_deadline_with_explicit_retry_key() -> None:
     assert ichef.calls == 1
     assert len(broadcaster.calls) == 1
     assert broadcaster.calls[0][1] == "123e4567-e89b-12d3-a456-426614174000"
+
+
+def test_manual_job_logs_fetch_format_and_completion(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    today = date(2026, 9, 1)
+    ichef = FakeIChef([{today: make_schedule(today)}])
+    broadcaster = FakeBroadcaster()
+    job = ScheduleJob(
+        ichef,  # type: ignore[arg-type]
+        broadcaster,  # type: ignore[arg-type]
+        TAIPEI,
+    )
+
+    with caplog.at_level(logging.INFO):
+        job.run_manual(today, "123e4567-e89b-12d3-a456-426614174000")
+
+    events = [record.event for record in caplog.records]  # type: ignore[attr-defined]
+    assert events == [
+        "manual_started",
+        "schedule_fetch_started",
+        "schedule_fetch_completed",
+        "schedule_formatted",
+        "broadcast_sent",
+        "manual_completed",
+    ]
+    fetch_completed = caplog.records[2]
+    assert fetch_completed.target_found is True  # type: ignore[attr-defined]
+    assert fetch_completed.target_fairy_count == 1  # type: ignore[attr-defined]
+    formatted = caplog.records[3]
+    assert formatted.message_utf16_code_units > 0  # type: ignore[attr-defined]
+    completed = caplog.records[-1]
+    assert (
+        completed.retry_key == "123e4567-e89b-12d3-a456-426614174000"
+    )  # type: ignore[attr-defined]
+    assert completed.duration_ms >= 0  # type: ignore[attr-defined]
 
 
 def test_manual_job_fetches_immediately_before_automatic_start_time() -> None:

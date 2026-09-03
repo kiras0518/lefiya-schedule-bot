@@ -66,6 +66,34 @@ webhook endpoint 是 `POST /callback`；`POST /webhooks/line` 是相同 handler 
 種類與 webhook event ID，不會記錄訊息內容或 LINE user ID。自動回覆或資料
 保存應透過自訂 event handler 另行實作。
 
+### Log
+
+Python 程式會將結構化 JSON log 輸出到 stderr；預設 `INFO` 已包含每次工作、iCHEF
+請求、LINE 請求及 webhook request 的開始、結果、錯誤、重試次數與耗時。常用事件
+包括：
+
+| 事件 | 用途 |
+|---|---|
+| `automatic_started`／`automatic_completed` | 自動廣播工作生命週期 |
+| `manual_started`／`manual_completed`／`manual_failed` | 手動補抓生命週期 |
+| `schedule_fetch_*` | 目標日期、可用日期與小精靈數量 |
+| `ichef_request_*` | GraphQL operation、HTTP status、attempt、重試與耗時 |
+| `line_broadcast_*`／`line_request_*` | retry key、HTTP status、LINE request ID、重試與耗時 |
+| `webhook_request_*` | request ID、路徑、status、事件數與耗時 |
+| `scheduler_*` | 內建 scheduler 的等待、啟動與退出狀態 |
+
+廣播內容、LINE access token、channel secret 與 LINE user ID 不會寫入 log。預設
+entrypoint 的 scheduler 與 webhook 共用同一個 container，因此可用以下方式查看兩者：
+
+```bash
+docker logs --follow lefiya-schedule-bot
+docker logs lefiya-schedule-bot 2>&1 | jq -R 'fromjson? | select(.event == "manual_started" or .event == "manual_completed" or .event == "manual_failed")'
+```
+
+若是從 `docker exec` 或 Zeabur Terminal 手動執行 `python -m lefiya_schedule_bot`，
+log 會顯示在該次 terminal session，不一定會回到長駐服務的 log stream；要保留手動
+執行記錄，請使用平台的 one-shot Job log，或在主機執行時將 stderr 一併導向檔案。
+
 環境變數：
 
 | 名稱 | 使用程序 | 必要 | 預設值 | 說明 |

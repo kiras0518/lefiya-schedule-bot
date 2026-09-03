@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 import requests
 from conftest import StubResponse, StubSession
@@ -30,6 +32,35 @@ def test_broadcast_sends_expected_payload_and_headers() -> None:
     assert call["timeout"] == (5.0, 20.0)
 
 
+def test_broadcast_logs_status_request_id_and_duration(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = StubSession(
+        [StubResponse(200, headers={"X-Line-Request-Id": "request-1"})]
+    )
+
+    with caplog.at_level(logging.INFO):
+        LineBroadcaster("secret-token", session=session).broadcast(
+            "今日班表", "retry-key"
+        )
+
+    response = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "line_response_received"
+    )
+    succeeded = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "line_broadcast_succeeded"
+    )
+    assert response.status_code == 200
+    assert response.request_id == "request-1"
+    assert succeeded.retry_key == "retry-key"
+    assert succeeded.attempt == 1
+    assert succeeded.duration_ms >= 0
+
+
 def test_broadcast_treats_409_as_already_sent() -> None:
     session = StubSession(
         [StubResponse(409, headers={"X-Line-Accepted-Request-Id": "accepted-1"})]
@@ -55,6 +86,26 @@ def test_broadcast_retries_retryable_statuses_with_identical_payload() -> None:
     assert all(
         call["headers"]["X-Line-Retry-Key"] == "same-key" for call in session.calls
     )
+
+
+def test_broadcast_logs_retryable_status_and_attempts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = StubSession([StubResponse(503), StubResponse(204)])
+
+    with caplog.at_level(logging.INFO):
+        LineBroadcaster("token", session=session, sleeper=lambda _: None).broadcast(
+            "text", "same-key"
+        )
+
+    retries = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "line_request_retrying"
+    ]
+    assert len(retries) == 1
+    assert retries[0].reason == "http_503"
+    assert retries[0].next_attempt == 2
 
 
 def test_broadcast_retries_timeout() -> None:

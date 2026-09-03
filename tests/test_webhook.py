@@ -75,6 +75,48 @@ def test_webhook_dispatches_message_and_follow_events(path: str) -> None:
     assert received[0]["message"]["text"] == "你好"
 
 
+def test_webhook_logs_request_lifecycle_and_correlates_events(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(WebhookSettings(CHANNEL_SECRET))
+    body = json.dumps(
+        {
+            "destination": "Ubot",
+            "events": [{"type": "follow", "webhookEventId": "event-follow"}],
+        },
+        separators=(",", ":"),
+    ).encode()
+
+    with caplog.at_level(logging.INFO):
+        response = app.test_client().post(
+            "/callback",
+            data=body,
+            headers={"x-line-signature": sign(body)},
+            content_type="application/json",
+        )
+
+    assert response.status_code == 200
+    records = {
+        record.event: record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        in {
+            "webhook_request_started",
+            "line_webhook_event_received",
+            "line_webhook_accepted",
+            "webhook_request_completed",
+        }
+    }
+    assert records["webhook_request_started"].request_kind == "line_webhook"
+    request_id = records["webhook_request_started"].request_id
+    assert records["line_webhook_event_received"].request_id == request_id
+    assert records["line_webhook_accepted"].request_id == request_id
+    assert records["line_webhook_accepted"].event_count == 1
+    assert records["webhook_request_completed"].request_id == request_id
+    assert records["webhook_request_completed"].status_code == 200
+    assert records["webhook_request_completed"].duration_ms >= 0
+
+
 def test_webhook_accepts_line_console_verification_request() -> None:
     app = create_app(WebhookSettings(CHANNEL_SECRET))
     body = b'{"destination":"Ubot","events":[]}'

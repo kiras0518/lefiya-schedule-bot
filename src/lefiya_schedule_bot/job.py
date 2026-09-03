@@ -6,12 +6,13 @@ import uuid
 from collections.abc import Callable
 from datetime import date, datetime
 from datetime import time as time_of_day
+from time import perf_counter
 from zoneinfo import ZoneInfo
 
 from .formatter import format_schedule_message
 from .ichef import IChefAPIError, IChefClient
-from .line import BroadcastResult, LineBroadcaster
-from .logging_config import log_event
+from .line import BroadcastResult, LineBroadcaster, utf16_code_units
+from .logging_config import duration_ms, log_event
 from .models import DailySchedule, MenuDataError
 
 
@@ -46,6 +47,16 @@ class ScheduleJob:
         self.logger = logger or logging.getLogger(__name__)
 
     def run(self) -> None:
+        started_at = perf_counter()
+        log_event(
+            self.logger,
+            logging.INFO,
+            "automatic_started",
+            mode="automatic",
+            timezone=self.timezone.key,
+            start_time=f"{self.START_TIME:%H:%M}",
+            deadline=f"{self.DEADLINE:%H:%M}",
+        )
         run_date: date | None = None
         last_upstream_error: IChefAPIError | None = None
 
@@ -85,7 +96,7 @@ class ScheduleJob:
                 )
 
             try:
-                schedules = self.ichef.fetch_schedules()
+                schedules = self._fetch_schedules(run_date, mode="automatic")
                 last_upstream_error = None
             except IChefAPIError as error:
                 last_upstream_error = error
@@ -111,10 +122,21 @@ class ScheduleJob:
 
             schedule = schedules.get(run_date)
             if schedule is not None and schedule.fairies:
-                self._broadcast_schedule(
+                retry_key = daily_retry_key(run_date)
+                result = self._broadcast_schedule(
                     schedule,
-                    daily_retry_key(run_date),
+                    retry_key,
                     mode="automatic",
+                )
+                log_event(
+                    self.logger,
+                    logging.INFO,
+                    "automatic_completed",
+                    mode="automatic",
+                    schedule_date=run_date.strftime("%Y%m%d"),
+                    retry_key=retry_key,
+                    already_sent=result.already_sent,
+                    duration_ms=duration_ms(started_at),
                 )
                 return
 
@@ -156,6 +178,7 @@ class ScheduleJob:
         retry_key: str | None = None,
     ) -> BroadcastResult:
         """Fetch and broadcast one requested date without schedule time limits."""
+        started_at = perf_counter()
         effective_retry_key = (
             retry_key if retry_key is not None else manual_retry_key()
         )
@@ -170,17 +193,28 @@ class ScheduleJob:
         )
 
         try:
-            schedules = self.ichef.fetch_schedules()
+            schedules = self._fetch_schedules(target_date, mode="manual")
             schedule = schedules.get(target_date)
             if schedule is None or not schedule.fairies:
                 raise ScheduleUnavailableError(
                     f"schedule unavailable for {target_date:%Y-%m-%d}"
                 )
-            return self._broadcast_schedule(
+            result = self._broadcast_schedule(
                 schedule,
                 effective_retry_key,
                 mode="manual",
             )
+            log_event(
+                self.logger,
+                logging.INFO,
+                "manual_completed",
+                mode="manual",
+                schedule_date=schedule_date,
+                retry_key=effective_retry_key,
+                already_sent=result.already_sent,
+                duration_ms=duration_ms(started_at),
+            )
+            return result
         except Exception as error:
             log_event(
                 self.logger,
@@ -191,8 +225,58 @@ class ScheduleJob:
                 retry_key=effective_retry_key,
                 error=str(error),
                 error_type=type(error).__name__,
+                duration_ms=duration_ms(started_at),
             )
             raise
+
+    def _fetch_schedules(
+        self,
+        target_date: date,
+        *,
+        mode: str,
+    ) -> dict[date, DailySchedule]:
+        started_at = perf_counter()
+        log_event(
+            self.logger,
+            logging.INFO,
+            "schedule_fetch_started",
+            mode=mode,
+            schedule_date=target_date.strftime("%Y%m%d"),
+        )
+        try:
+            schedules = self.ichef.fetch_schedules()
+        except Exception as error:
+            log_event(
+                self.logger,
+                logging.ERROR,
+                "schedule_fetch_failed",
+                mode=mode,
+                schedule_date=target_date.strftime("%Y%m%d"),
+                error=str(error),
+                error_type=type(error).__name__,
+                duration_ms=duration_ms(started_at),
+            )
+            raise
+
+        target_schedule = schedules.get(target_date)
+        log_event(
+            self.logger,
+            logging.INFO,
+            "schedule_fetch_completed",
+            mode=mode,
+            schedule_date=target_date.strftime("%Y%m%d"),
+            available_dates=sorted(
+                service_date.strftime("%Y%m%d") for service_date in schedules
+            ),
+            schedule_count=len(schedules),
+            fairy_count=sum(len(schedule.fairies) for schedule in schedules.values()),
+            target_found=target_schedule is not None,
+            target_fairy_count=(
+                len(target_schedule.fairies) if target_schedule is not None else 0
+            ),
+            duration_ms=duration_ms(started_at),
+        )
+        return schedules
 
     def _broadcast_schedule(
         self,
@@ -202,6 +286,16 @@ class ScheduleJob:
         mode: str,
     ) -> BroadcastResult:
         message = format_schedule_message(schedule)
+        log_event(
+            self.logger,
+            logging.INFO,
+            "schedule_formatted",
+            mode=mode,
+            schedule_date=schedule.service_date.strftime("%Y%m%d"),
+            fairy_count=len(schedule.fairies),
+            message_length=len(message),
+            message_utf16_code_units=utf16_code_units(message),
+        )
         result = self.broadcaster.broadcast(message, retry_key)
         event = "already_sent" if result.already_sent else "broadcast_sent"
         log_event(

@@ -5,12 +5,13 @@ import logging
 import uuid
 from collections.abc import Sequence
 from datetime import date, datetime
+from time import perf_counter
 
 from .config import ConfigurationError, Settings
 from .ichef import IChefClient
 from .job import ScheduleJob
 from .line import LineBroadcaster
-from .logging_config import configure_logging, log_event
+from .logging_config import configure_logging, duration_ms, log_event
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -70,28 +71,76 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    started_at = perf_counter()
     configure_logging("INFO")
     logger = logging.getLogger(__name__)
 
     try:
         args = _parse_args(argv)
     except SystemExit as error:
-        return int(error.code)
+        exit_code = int(error.code) if isinstance(error.code, int) else 2
+        log_event(
+            logger,
+            logging.INFO if exit_code == 0 else logging.ERROR,
+            "cli_completed" if exit_code == 0 else "cli_failed",
+            error=(
+                "help requested"
+                if exit_code == 0
+                else "invalid command-line arguments"
+            ),
+            error_type=(None if exit_code == 0 else "ArgumentError"),
+            exit_code=exit_code,
+            duration_ms=duration_ms(started_at),
+        )
+        return exit_code
 
+    mode = "manual" if args.manual else "automatic"
+    target_date: date | None = args.service_date if args.manual else None
+    retry_key: str | None = args.retry_key if args.manual else None
+    log_event(
+        logger,
+        logging.INFO,
+        "cli_started",
+        mode=mode,
+        schedule_date=(
+            target_date.strftime("%Y%m%d") if target_date is not None else None
+        ),
+        retry_key=retry_key,
+    )
     try:
         settings = Settings.from_env()
         configure_logging(settings.log_level)
-        target_date: date | None = None
+        log_event(
+            logger,
+            logging.INFO,
+            "settings_loaded",
+            mode=mode,
+            timezone=settings.timezone_name,
+            log_level=settings.log_level,
+        )
         if args.manual:
             current_date = datetime.now(settings.timezone).date()
             target_date = args.service_date or current_date
+            log_event(
+                logger,
+                logging.INFO,
+                "target_date_resolved",
+                mode=mode,
+                schedule_date=target_date.strftime("%Y%m%d"),
+                timezone=settings.timezone_name,
+                date_source=("argument" if args.service_date is not None else "today"),
+            )
             if target_date > current_date:
                 log_event(
                     logger,
                     logging.ERROR,
-                    "invalid_arguments",
+                    "cli_failed",
+                    mode=mode,
                     error="manual target date cannot be in the future",
                     schedule_date=target_date.strftime("%Y%m%d"),
+                    timezone=settings.timezone_name,
+                    exit_code=2,
+                    duration_ms=duration_ms(started_at),
                 )
                 return 2
         job = ScheduleJob(
@@ -100,20 +149,50 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings.timezone,
         )
         if target_date is not None:
-            job.run_manual(target_date, args.retry_key)
+            result = job.run_manual(target_date, args.retry_key)
         else:
             job.run()
+            result = None
+        log_event(
+            logger,
+            logging.INFO,
+            "cli_completed",
+            mode=mode,
+            schedule_date=(
+                target_date.strftime("%Y%m%d") if target_date is not None else None
+            ),
+            retry_key=retry_key,
+            already_sent=(result.already_sent if result is not None else None),
+            exit_code=0,
+            duration_ms=duration_ms(started_at),
+        )
         return 0
     except ConfigurationError as error:
-        log_event(logger, logging.ERROR, "configuration_error", error=str(error))
+        log_event(
+            logger,
+            logging.ERROR,
+            "configuration_error",
+            mode=mode,
+            error=str(error),
+            error_type=type(error).__name__,
+            exit_code=2,
+            duration_ms=duration_ms(started_at),
+        )
         return 2
     except Exception as error:
         log_event(
             logger,
             logging.ERROR,
             "job_failed",
+            mode=mode,
+            schedule_date=(
+                target_date.strftime("%Y%m%d") if target_date is not None else None
+            ),
+            retry_key=retry_key,
             error=str(error),
             error_type=type(error).__name__,
+            exit_code=1,
+            duration_ms=duration_ms(started_at),
         )
         return 1
 
