@@ -44,6 +44,10 @@ PYTHONPATH=src python -m lefiya_schedule_bot --manual --date 2026-09-02
 LINE 回應逾時或 5xx 而結果不明，請從 structured log 取出該次的 retry key，於
 24 小時內使用相同 key 重試：
 
+iCHEF 回傳的分類可能同時包含多個日期。為相容原本 Telegram 範例的行為，若目標
+日期是回傳內容的第一個日期，會合併該次回傳的所有有日期分類；指定其他歷史日期時
+則只使用該日期的分類。
+
 ```bash
 PYTHONPATH=src python -m lefiya_schedule_bot \
   --manual --date 2026-09-02 \

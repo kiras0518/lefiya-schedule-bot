@@ -35,7 +35,10 @@ class FakeIChef:
         self.outcomes = iter(outcomes)
         self.calls = 0
 
-    def fetch_schedules(self) -> dict[date, DailySchedule]:
+    def fetch_schedules(
+        self,
+        target_date: date | None = None,
+    ) -> dict[date, DailySchedule]:
         self.calls += 1
         outcome = next(self.outcomes)
         if isinstance(outcome, Exception):

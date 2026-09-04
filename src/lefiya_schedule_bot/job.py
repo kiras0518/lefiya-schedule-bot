@@ -244,7 +244,7 @@ class ScheduleJob:
             schedule_date=target_date.strftime("%Y%m%d"),
         )
         try:
-            schedules = self.ichef.fetch_schedules()
+            schedules = self.ichef.fetch_schedules(target_date)
         except Exception as error:
             log_event(
                 self.logger,

@@ -49,6 +49,40 @@ def test_parse_multiple_dates_photo_options_and_sorting() -> None:
     assert schedules[date(2026, 9, 2)].fairies[0].name == "明日夜班"
 
 
+def test_parse_target_first_date_matches_reference_aggregation() -> None:
+    data = menu_response(
+        [
+            category("20260904 午安", "宮"),
+            category("20260903 午晚安", "黎貝洛"),
+            category("20260904 午晚安", "露易絲"),
+        ]
+    )
+
+    schedules = parse_daily_schedules(data, target_date=date(2026, 9, 4))
+
+    assert list(schedules) == [date(2026, 9, 4)]
+    assert [fairy.name for fairy in schedules[date(2026, 9, 4)].fairies] == [
+        "宮",
+        "黎貝洛",
+        "露易絲",
+    ]
+
+
+def test_parse_target_non_first_date_stays_date_filtered() -> None:
+    data = menu_response(
+        [
+            category("20260904 午安", "宮"),
+            category("20260903 午晚安", "黎貝洛"),
+        ]
+    )
+
+    schedules = parse_daily_schedules(data, target_date=date(2026, 9, 3))
+
+    assert [fairy.name for fairy in schedules[date(2026, 9, 3)].fairies] == [
+        "黎貝洛"
+    ]
+
+
 def test_parse_empty_dated_category_is_represented() -> None:
     schedules = parse_daily_schedules(menu_response([category("20260901 午安", None)]))
 

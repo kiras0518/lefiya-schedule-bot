@@ -70,16 +70,31 @@ class IChefClient:
         self.timeout = timeout
         self.logger = logger or logging.getLogger(__name__)
 
-    def fetch_schedules(self) -> dict[date, DailySchedule]:
+    def fetch_schedules(
+        self,
+        target_date: date | None = None,
+    ) -> dict[date, DailySchedule]:
         started_at = perf_counter()
-        log_event(self.logger, logging.INFO, "ichef_fetch_started")
+        log_event(
+            self.logger,
+            logging.INFO,
+            "ichef_fetch_started",
+            requested_date=(
+                target_date.strftime("%Y%m%d") if target_date is not None else None
+            ),
+        )
         try:
-            schedules, category_uuid_count = self._fetch_schedules()
+            schedules, category_uuid_count = self._fetch_schedules(target_date)
         except Exception as error:
             log_event(
                 self.logger,
                 logging.ERROR,
                 "ichef_fetch_failed",
+                requested_date=(
+                    target_date.strftime("%Y%m%d")
+                    if target_date is not None
+                    else None
+                ),
                 error=str(error),
                 error_type=type(error).__name__,
                 duration_ms=duration_ms(started_at),
@@ -89,6 +104,9 @@ class IChefClient:
             self.logger,
             logging.INFO,
             "ichef_fetch_completed",
+            requested_date=(
+                target_date.strftime("%Y%m%d") if target_date is not None else None
+            ),
             category_uuid_count=category_uuid_count,
             schedule_count=len(schedules),
             fairy_count=sum(len(schedule.fairies) for schedule in schedules.values()),
@@ -99,7 +117,10 @@ class IChefClient:
         )
         return schedules
 
-    def _fetch_schedules(self) -> tuple[dict[date, DailySchedule], int]:
+    def _fetch_schedules(
+        self,
+        target_date: date | None = None,
+    ) -> tuple[dict[date, DailySchedule], int]:
         category_uuids = self._fetch_category_uuids()
         if not category_uuids:
             return {}, 0
@@ -111,7 +132,7 @@ class IChefClient:
                 "categoriesSnapshotUuids": category_uuids,
             },
         )
-        return parse_daily_schedules(menu), len(category_uuids)
+        return parse_daily_schedules(menu, target_date=target_date), len(category_uuids)
 
     def _fetch_category_uuids(self) -> list[str]:
         result = self._request(

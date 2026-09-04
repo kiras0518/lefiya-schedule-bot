@@ -67,7 +67,20 @@ def parse_category_date(name: str) -> date | None:
         raise MenuDataError(f"invalid category date: {match.group(1)}") from error
 
 
-def parse_daily_schedules(data: Mapping[str, Any]) -> dict[date, DailySchedule]:
+def parse_daily_schedules(
+    data: Mapping[str, Any],
+    *,
+    target_date: date | None = None,
+) -> dict[date, DailySchedule]:
+    """Parse iCHEF categories into schedules.
+
+    The original Telegram implementation treated the first dated category as
+    the active menu date and combined all dated categories returned by iCHEF.
+    iCHEF can return categories for more than one date in the same response, so
+    preserve that behavior when the caller explicitly requests that first date.
+    Other requested dates remain date-filtered, which keeps historical manual
+    recovery precise.
+    """
     try:
         categories = data["data"]["restaurant"]["menu"]["categoriesSnapshot"]
     except (KeyError, TypeError) as error:
@@ -77,6 +90,8 @@ def parse_daily_schedules(data: Mapping[str, Any]) -> dict[date, DailySchedule]:
         raise MenuDataError("categoriesSnapshot must be a list")
 
     fairies_by_date: dict[date, list[Fairy]] = {}
+    all_dated_fairies: list[Fairy] = []
+    first_dated_date: date | None = None
     found_dated_category = False
 
     for category in categories:
@@ -91,6 +106,8 @@ def parse_daily_schedules(data: Mapping[str, Any]) -> dict[date, DailySchedule]:
         if service_date is None:
             continue
         found_dated_category = True
+        if first_dated_date is None:
+            first_dated_date = service_date
 
         items = category.get("menuItemSnapshot", [])
         if not isinstance(items, list):
@@ -99,15 +116,36 @@ def parse_daily_schedules(data: Mapping[str, Any]) -> dict[date, DailySchedule]:
         schedule = Schedule.from_category_name(name)
         destination = fairies_by_date.setdefault(service_date, [])
         for item in items:
-            destination.append(_parse_fairy(item, schedule))
+            fairy = _parse_fairy(item, schedule)
+            destination.append(fairy)
+            all_dated_fairies.append(fairy)
 
     if categories and not found_dated_category:
         raise MenuDataError("menu response contains no YYYYMMDD category")
 
     schedules: dict[date, DailySchedule] = {}
     for service_date, fairies in fairies_by_date.items():
-        fairies.sort(key=lambda fairy: fairy.schedule.order)
-        schedules[service_date] = DailySchedule(service_date, tuple(fairies))
+        schedules[service_date] = DailySchedule(
+            service_date,
+            tuple(sorted(fairies, key=lambda fairy: fairy.schedule.order)),
+        )
+
+    if (
+        target_date is not None
+        and target_date == first_dated_date
+        and first_dated_date is not None
+    ):
+        schedules[target_date] = DailySchedule(
+            target_date,
+            tuple(
+                sorted(all_dated_fairies, key=lambda fairy: fairy.schedule.order)
+            ),
+        )
+
+    if target_date is not None:
+        target_schedule = schedules.get(target_date)
+        return {target_date: target_schedule} if target_schedule is not None else {}
+
     return schedules
 
 

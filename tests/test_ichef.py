@@ -36,6 +36,31 @@ def test_fetch_schedules_calls_both_graphql_operations() -> None:
     assert session.calls[0]["timeout"] == (5.0, 20.0)
 
 
+def test_fetch_schedules_target_uses_reference_aggregation() -> None:
+    session = StubSession(
+        [
+            StubResponse(200, menu_hours_response("uuid-1")),
+            StubResponse(
+                200,
+                menu_response(
+                    [
+                        category("20260904 午安", "宮"),
+                        category("20260903 午晚安", "黎貝洛"),
+                    ]
+                ),
+            ),
+        ]
+    )
+    client = IChefClient("public-id", session=session)
+
+    schedules = client.fetch_schedules(date(2026, 9, 4))
+
+    assert [fairy.name for fairy in schedules[date(2026, 9, 4)].fairies] == [
+        "宮",
+        "黎貝洛",
+    ]
+
+
 def test_fetch_schedules_logs_operations_and_summary(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
