@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
+
+from .logging_config import log_event
 
 
 class MenuDataError(ValueError):
@@ -52,6 +55,7 @@ class Fairy:
 class DailySchedule:
     service_date: date
     fairies: tuple[Fairy, ...]
+    source_counts: tuple[tuple[date, int], ...] = ()
 
 
 _CATEGORY_DATE_PATTERN = re.compile(r"^\s*(\d{8})(?=\D|$)")
@@ -128,6 +132,7 @@ def parse_daily_schedules(
         schedules[service_date] = DailySchedule(
             service_date,
             tuple(sorted(fairies, key=lambda fairy: fairy.schedule.order)),
+            ((service_date, len(fairies)),),
         )
 
     if (
@@ -137,10 +142,20 @@ def parse_daily_schedules(
     ):
         schedules[target_date] = DailySchedule(
             target_date,
-            tuple(
-                sorted(all_dated_fairies, key=lambda fairy: fairy.schedule.order)
-            ),
+            tuple(sorted(all_dated_fairies, key=lambda fairy: fairy.schedule.order)),
+            tuple((day, len(items)) for day, items in sorted(fairies_by_date.items())),
         )
+        if len(fairies_by_date) > 1:
+            log_event(
+                logging.getLogger(__name__),
+                logging.WARNING,
+                "mixed_schedule_dates",
+                schedule_date=target_date.strftime("%Y%m%d"),
+                source_counts={
+                    day.isoformat(): len(items)
+                    for day, items in sorted(fairies_by_date.items())
+                },
+            )
 
     if target_date is not None:
         target_schedule = schedules.get(target_date)

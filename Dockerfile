@@ -19,4 +19,6 @@ USER app
 
 EXPOSE 8080
 
+STOPSIGNAL SIGTERM
+
 CMD ["/app/entrypoint.sh"]

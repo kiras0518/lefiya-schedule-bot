@@ -16,11 +16,12 @@ class Settings:
     ichef_public_id: str = "WqxdHUPa"
     timezone_name: str = "Asia/Taipei"
     log_level: str = "INFO"
+    job_lock_path: str = "/tmp/lefiya-schedule-bot/job.lock"
 
     @classmethod
-    def from_env(cls) -> Settings:
+    def from_env(cls, *, require_token: bool = True) -> Settings:
         token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-        if not token:
+        if require_token and not token:
             raise ConfigurationError("LINE_CHANNEL_ACCESS_TOKEN is required")
 
         public_id = os.environ.get("ICHEF_PUBLIC_ID", "WqxdHUPa").strip()
@@ -30,7 +31,7 @@ class Settings:
         timezone_name = os.environ.get("APP_TIMEZONE", "Asia/Taipei").strip()
         try:
             ZoneInfo(timezone_name)
-        except ZoneInfoNotFoundError as error:
+        except (ZoneInfoNotFoundError, ValueError) as error:
             raise ConfigurationError(
                 f"APP_TIMEZONE is not a valid IANA timezone: {timezone_name}"
             ) from error
@@ -44,6 +45,9 @@ class Settings:
             ichef_public_id=public_id,
             timezone_name=timezone_name,
             log_level=log_level,
+            job_lock_path=os.environ.get(
+                "JOB_LOCK_PATH", "/tmp/lefiya-schedule-bot/job.lock"
+            ),
         )
 
     @property

@@ -47,6 +47,30 @@ class ScheduleJob:
         self.logger = logger or logging.getLogger(__name__)
 
     def run(self) -> None:
+        run_day = self._now().date()
+
+        def check_deadline() -> None:
+            now = self._now()
+            if now.date() != run_day or now.time() >= self.DEADLINE:
+                log_event(
+                    self.logger,
+                    logging.ERROR,
+                    "deadline_exceeded",
+                    schedule_date=run_day.strftime("%Y%m%d"),
+                )
+                raise DeadlineExceededError("schedule unavailable: deadline reached")
+
+        original_ichef_guard = getattr(self.ichef, "before_request", lambda: None)
+        original_line_guard = getattr(self.broadcaster, "before_request", lambda: None)
+        self.ichef.before_request = check_deadline
+        self.broadcaster.before_request = check_deadline
+        try:
+            self._run_automatic(check_deadline)
+        finally:
+            self.ichef.before_request = original_ichef_guard
+            self.broadcaster.before_request = original_line_guard
+
+    def _run_automatic(self, check_deadline: Callable[[], None]) -> None:
         started_at = perf_counter()
         log_event(
             self.logger,
@@ -58,7 +82,6 @@ class ScheduleJob:
             deadline=f"{self.DEADLINE:%H:%M}",
         )
         run_date: date | None = None
-        last_upstream_error: IChefAPIError | None = None
 
         while True:
             now = self._now()
@@ -83,7 +106,7 @@ class ScheduleJob:
                 self.sleeper(seconds)
                 continue
 
-            if now.time() > self.DEADLINE:
+            if now.time() >= self.DEADLINE:
                 log_event(
                     self.logger,
                     logging.ERROR,
@@ -92,14 +115,12 @@ class ScheduleJob:
                     reason="job_started_after_deadline",
                 )
                 raise DeadlineExceededError(
-                    f"schedule job started after {self.DEADLINE:%H:%M}"
+                    f"schedule unavailable: job started after {self.DEADLINE:%H:%M}"
                 )
 
             try:
                 schedules = self._fetch_schedules(run_date, mode="automatic")
-                last_upstream_error = None
             except IChefAPIError as error:
-                last_upstream_error = error
                 log_event(
                     self.logger,
                     logging.WARNING,
@@ -120,6 +141,8 @@ class ScheduleJob:
                 )
                 raise
 
+            check_deadline()
+            now = self._now()
             schedule = schedules.get(run_date)
             if schedule is not None and schedule.fairies:
                 retry_key = daily_retry_key(run_date)
@@ -139,20 +162,6 @@ class ScheduleJob:
                     duration_ms=duration_ms(started_at),
                 )
                 return
-
-            if now.time() >= self.DEADLINE:
-                log_event(
-                    self.logger,
-                    logging.ERROR,
-                    "deadline_exceeded",
-                    schedule_date=run_date.strftime("%Y%m%d"),
-                    last_upstream_error=(
-                        str(last_upstream_error) if last_upstream_error else None
-                    ),
-                )
-                raise DeadlineExceededError(
-                    f"today's schedule was unavailable by {self.DEADLINE:%H:%M}"
-                )
 
             seconds = min(
                 self.POLL_INTERVAL_SECONDS,
@@ -179,9 +188,7 @@ class ScheduleJob:
     ) -> BroadcastResult:
         """Fetch and broadcast one requested date without schedule time limits."""
         started_at = perf_counter()
-        effective_retry_key = (
-            retry_key if retry_key is not None else manual_retry_key()
-        )
+        effective_retry_key = retry_key if retry_key is not None else manual_retry_key()
         schedule_date = target_date.strftime("%Y%m%d")
         log_event(
             self.logger,

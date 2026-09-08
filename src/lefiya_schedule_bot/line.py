@@ -45,6 +45,7 @@ class LineBroadcaster:
         self.max_attempts = max_attempts
         self.timeout = timeout
         self.logger = logger or logging.getLogger(__name__)
+        self.before_request: Callable[[], None] = lambda: None
 
     def broadcast(self, text: str, retry_key: str) -> BroadcastResult:
         started_at = perf_counter()
@@ -65,8 +66,7 @@ class LineBroadcaster:
                 "line_broadcast_failed",
                 retry_key=retry_key,
                 error=(
-                    f"LINE text has {code_units} UTF-16 code units; "
-                    "maximum is 5000"
+                    f"LINE text has {code_units} UTF-16 code units; maximum is 5000"
                 ),
                 error_type=MessageTooLongError.__name__,
                 duration_ms=duration_ms(started_at),
@@ -85,6 +85,7 @@ class LineBroadcaster:
         last_status_code: int | None = None
 
         for attempt in range(1, self.max_attempts + 1):
+            self.before_request()
             attempt_started_at = perf_counter()
             log_event(
                 self.logger,

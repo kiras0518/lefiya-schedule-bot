@@ -123,7 +123,7 @@ def test_job_ignores_stale_and_future_schedules_then_fails_at_deadline() -> None
     with pytest.raises(DeadlineExceededError, match="unavailable"):
         job.run()
 
-    assert ichef.calls == 2
+    assert ichef.calls == 1
     assert broadcaster.calls == []
     assert clock.current.hour == 15 and clock.current.minute == 0
 

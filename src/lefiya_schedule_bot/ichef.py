@@ -69,6 +69,7 @@ class IChefClient:
         self.max_attempts = max_attempts
         self.timeout = timeout
         self.logger = logger or logging.getLogger(__name__)
+        self.before_request: Callable[[], None] = lambda: None
 
     def fetch_schedules(
         self,
@@ -91,9 +92,7 @@ class IChefClient:
                 logging.ERROR,
                 "ichef_fetch_failed",
                 requested_date=(
-                    target_date.strftime("%Y%m%d")
-                    if target_date is not None
-                    else None
+                    target_date.strftime("%Y%m%d") if target_date is not None else None
                 ),
                 error=str(error),
                 error_type=type(error).__name__,
@@ -182,6 +181,7 @@ class IChefClient:
         last_status_code: int | None = None
 
         for attempt in range(1, self.max_attempts + 1):
+            self.before_request()
             started_at = perf_counter()
             log_event(
                 self.logger,

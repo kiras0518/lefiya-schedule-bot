@@ -20,8 +20,4 @@ def test_entrypoint_schedules_automatic_job_and_starts_webhook() -> None:
     contents = entrypoint.read_text()
 
     assert entrypoint.stat().st_mode & 0o111
-    assert "TARGET_SECS=$((5 * 3600 + 35 * 60))" in contents
-    assert 'if [ "$wait" -lt 0 ]; then' in contents
-    assert "python -m lefiya_schedule_bot" in contents
-    assert '"0.0.0.0:${PORT:-8080}"' in contents
-    assert "lefiya_schedule_bot.webhook:create_app()" in contents
+    assert "exec python -m lefiya_schedule_bot.service" in contents
