@@ -2,7 +2,7 @@
 
 每天從 iCHEF 讀取蕾菲亞小精靈的今日班表，並透過 LINE Official Account
 Messaging API 廣播給所有好友。預設容器由 `entrypoint.sh` 同時啟動長駐 webhook
-receiver 與內建 scheduler；scheduler 每天 05:35 UTC（13:35 Asia/Taipei）啟動
+receiver 與內建 scheduler；scheduler 每天依 `APP_TIMEZONE` 於 13:35 啟動
 一次廣播程序，每五分鐘檢查一次，取得今日班表後送出並結束；15:00 仍無資料則以
 非零狀態結束，隔日會自動重試。
 
@@ -55,7 +55,20 @@ PYTHONPATH=src python -m lefiya_schedule_bot \
 ```
 
 手動模式查不到目標日期或班表為空時會以非零狀態結束，且不會發送訊息。`--date`
-與 `--retry-key` 必須和 `--manual` 一起使用。
+也可用於 `--dry-run`；`--retry-key` 必須和 `--manual` 一起使用。
+
+### 不發送訊息的預覽
+
+```bash
+PYTHONPATH=src python -m lefiya_schedule_bot --dry-run
+PYTHONPATH=src python -m lefiya_schedule_bot --dry-run --date 2026-09-07
+```
+
+預覽只抓取一次，不等待窗口、不呼叫 LINE、不要求 token、不取得廣播鎖。
+stdout 是實際訊息文字；stderr 是 JSON 診斷，包含來源日期、人數與 UTF-16 長度。
+無資料、空班表、資料錯誤或超過 5,000 UTF-16 code units 均失敗；未來日期不接受。
+不可與 `--manual` 或 `--retry-key` 合用。跨日期合併會記錄 `mixed_schedule_dates`；
+此相容模式不保證每位小精靈都屬於目標日期，請用預覽確認店家分類。
 
 本機啟動 webhook receiver：
 
@@ -85,6 +98,11 @@ Python 程式會將結構化 JSON log 輸出到 stderr；預設 `INFO` 已包含
 | `line_broadcast_*`／`line_request_*` | retry key、HTTP status、LINE request ID、重試與耗時 |
 | `webhook_request_*` | request ID、路徑、status、事件數與耗時 |
 | `scheduler_*` | 內建 scheduler 的等待、啟動與退出狀態 |
+| `scheduler_waiting` | 時區、下次執行時間與等待秒數 |
+| `scheduler_catchup_started` | 當日窗口內啟動工作 |
+| `job_already_running` | 共用鎖忙碌，本次安全略過 |
+| `mixed_schedule_dates` | 跨日期合併及各日期人數 |
+| `service_child_exited` | 常駐子程序退出，管理入口將停止容器 |
 
 廣播內容、LINE access token、channel secret 與 LINE user ID 不會寫入 log。預設
 entrypoint 的 scheduler 與 webhook 共用同一個 container，因此可用以下方式查看兩者：
@@ -107,6 +125,7 @@ log 會顯示在該次 terminal session，不一定會回到長駐服務的 log 
 | `ICHEF_PUBLIC_ID` | 廣播 | 否 | `WqxdHUPa` | iCHEF 商店 public ID |
 | `APP_TIMEZONE` | 廣播 | 否 | `Asia/Taipei` | IANA timezone |
 | `LOG_LEVEL` | 兩者 | 否 | `INFO` | Python logging level |
+| `JOB_LOCK_PATH` | 廣播／管理入口 | 否 | `/tmp/lefiya-schedule-bot/job.lock` | 本機共用執行鎖 |
 
 直接使用 Docker 預設命令時，scheduler 與 webhook 會同時啟動，因此必須同時提供
 `LINE_CHANNEL_ACCESS_TOKEN` 與 `LINE_CHANNEL_SECRET`。若只需要其中一個程序，請在
@@ -158,28 +177,54 @@ chmod 600 /etc/lefiya-schedule-webhook.env
 chmod 600 /etc/lefiya-schedule-bot.env
 ```
 
-預設容器命令會由內建 scheduler 每天 05:35 UTC（13:35 Asia/Taipei）啟動自動模式，
+預設容器命令會由內建 scheduler 每天於 `APP_TIMEZONE` 的 13:35 啟動自動模式，
 因此不需要另外設定 cron：
 
 ```bash
 docker run --detach \
   --name lefiya-schedule-bot \
   --restart unless-stopped \
+  --stop-timeout 15 \
   --env-file /etc/lefiya-schedule-bot.env \
   --publish 127.0.0.1:8080:8080 \
   lefiya-schedule-bot:latest
 ```
 
-若另有手動或 one-shot 廣播，仍必須使用主機層級鎖，避免和內建 scheduler 同時執行。
-以下手動範例使用 `flock`；請確認執行帳號可以建立或寫入
-`/var/lock/lefiya-schedule-bot-broadcast.lock`。若部署多個副本，請只保留一個副本
-執行內建 scheduler。
+容器必須維持單一 replica、持續運行且不休眠。啟動時即驗證 token、secret、時區與
+鎖檔可寫性；設定錯誤會立即退出。Python 管理入口監督 scheduler 與 Gunicorn，
+任一常駐程序非預期退出，容器會非零退出，由 restart policy 處理。
+單次班表工作失敗則記錄日誌並等待隔日。停止時轉送訊號至程序群組，最多等待十秒。
+建議平台停止寬限設為至少十五秒，例如 Docker `--stop-timeout 15`。
+
+| 啟動時間（APP_TIMEZONE） | 行為 |
+|---|---|
+| 13:35 前 | 等到今日 13:35 |
+| 13:35 至 15:00 前 | 立即執行今日工作；13:40 前仍會等待 |
+| 15:00 起 | 等到隔日 13:35，不自動補發 |
+
+每五分鐘查詢；15:00 起不開始新的 HTTP 請求（含重試），已開始的請求可完成。
+同一容器生命週期內，工作成功或失敗後均安排隔日。容器停止期間不能自行喚醒。
+`/health` 只表示 webhook 存活，不能證明今日班表已廣播；請確認 `broadcast_sent`
+或 `already_sent`，以及 `scheduler_job_failed`／`deadline_exceeded`。
+
+自動與 manual 共用 Python 檔案鎖，忙碌時記錄 `job_already_running` 並回傳 0。
+鎖只防同時執行，不防止先後重複手動廣播。最簡單的補發方式是在同一容器內執行：
+
+```bash
+docker exec lefiya-schedule-bot python -m lefiya_schedule_bot --manual
+```
+
+若另開 one-shot 容器，必須讓常駐及 one-shot 容器都掛載同一個主機目錄，例如
+兩者都加上 `--mount type=bind,src=/srv/lefiya-lock,dst=/tmp/lefiya-schedule-bot`。
+先建立 `/srv/lefiya-lock` 並讓 image 的 `app` UID/GID 可寫（可用
+`docker run --rm lefiya-schedule-bot:latest id` 查詢）；不要刪除運行中的鎖檔。
+未共享掛載的容器鎖互不相通；不支援跨機器分散式鎖。外部 `flock` 不涵蓋內建排程。
 
 手動補抓可以在 15:00 後執行：
 
 ```bash
-flock -n /var/lock/lefiya-schedule-bot-broadcast.lock \
 docker run --rm --name lefiya-schedule-bot-manual \
+  --mount type=bind,src=/srv/lefiya-lock,dst=/tmp/lefiya-schedule-bot \
   --env-file /etc/lefiya-schedule-broadcast.env \
   lefiya-schedule-bot:latest \
   python -m lefiya_schedule_bot --manual
@@ -188,8 +233,8 @@ docker run --rm --name lefiya-schedule-bot-manual \
 指定日期或復原不確定的 LINE 請求：
 
 ```bash
-flock -n /var/lock/lefiya-schedule-bot-broadcast.lock \
 docker run --rm --name lefiya-schedule-bot-manual \
+  --mount type=bind,src=/srv/lefiya-lock,dst=/tmp/lefiya-schedule-bot \
   --env-file /etc/lefiya-schedule-broadcast.env \
   lefiya-schedule-bot:latest \
   python -m lefiya_schedule_bot --manual \
@@ -250,9 +295,25 @@ LINE 可能重新投遞 webhook。預設 handler 只有記錄事件；未來若�
 
 | 退出碼 | 意義 |
 |---:|---|
-| `0` | 廣播成功，或相同 retry key 已由 LINE 接受 |
-| `1` | 自動模式逾時、手動模式無目標班表、上游資料錯誤、互斥鎖忙碌或 LINE 發送失敗 |
+| `0` | 廣播被 LINE 接受／已接受、預覽成功，或互斥鎖忙碌而略過 |
+| `1` | 自動模式逾時、無目標班表、上游資料錯誤、訊息超長或 LINE 發送失敗 |
 | `2` | 環境設定錯誤或 CLI 參數錯誤 |
 
 LINE 全好友廣播會依可接收好友人數計入每月訊息額度。啟用排程前，請先確認
 Official Account 方案足以負擔「好友數 × 當月發送天數」。
+
+### 上線驗證
+
+先執行 pytest 與 ruff，再重新 build image。可用下列無 token 命令確認管理入口
+快速失敗，而非靜默等待排程：
+
+```bash
+docker run --rm lefiya-schedule-bot:latest
+docker run --rm lefiya-schedule-bot:latest python -m lefiya_schedule_bot --help
+LEFIYA_TEST_IMAGE=lefiya-schedule-bot:latest pytest tests/test_container_smoke.py
+```
+
+部署後先執行 `docker exec lefiya-schedule-bot python -m lefiya_schedule_bot --dry-run`
+確認班表內容。啟動正式常駐容器前須注意：若已在有效窗口內，會立即進入自動工作，
+可能向所有好友廣播；測試請使用測試帳號。LINE 接受請求不等於每位好友均成功收到。
+獨立審查與 Docker Linux 實測仍應在具備對應工具的環境執行。
